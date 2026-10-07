@@ -1,0 +1,33 @@
+{
+  "default_branch": "main",
+  "branches": [
+    "fix/issue-30",
+    "fix/issue-30-review",
+    "fix/issue-33",
+    "fix/issue-33-lspnjr1",
+    "fix/issue-34-lspnjr1",
+    "fix/issue-42-review",
+    "main",
+    "origin"
+  ],
+  "parent": {
+    "fix/issue-30": "main",
+    "fix/issue-30-review": "fix/issue-30",
+    "fix/issue-33": "main",
+    "fix/issue-33-lspnjr1": "fix/issue-33",
+    "fix/issue-34-lspnjr1": "main",
+    "fix/issue-42-review": "main",
+    "main": null,
+    "origin": "main"
+  },
+  "order": [
+    "main",
+    "fix/issue-30",
+    "fix/issue-33",
+    "fix/issue-34-lspnjr1",
+    "fix/issue-42-review",
+    "origin",
+    "fix/issue-30-review",
+    "fix/issue-33-lspnjr1"
+  ]
+}
