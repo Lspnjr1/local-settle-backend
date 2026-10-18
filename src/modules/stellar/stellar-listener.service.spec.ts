@@ -15,6 +15,8 @@ import { AuditAction, AuditResult } from '../audit-log/enums/audit-action.enum';
 import { EscrowService } from '../escrow/escrow.service';
 import { OrderService } from '../order/order.service';
 import { escrowEventFixtures } from './fixtures/escrow-events';
+import axios from 'axios';
+import { TrustlessWorkService } from '../escrow/trustless-work.service';
 
 interface MockEscrowRecord {
   escrowId: string;
@@ -38,6 +40,8 @@ describe('StellarListenerService', () => {
   let executeCheckpointMock: jest.Mock;
   let queryCheckpointMock: jest.Mock;
   let parser: StellarEventParserService;
+  let findManyEscrowMock: jest.Mock;
+  let getEscrowByContractIdMock: jest.Mock;
 
   const mockEscrow: MockEscrowRecord = {
     escrowId: 'escrow-123',
@@ -63,11 +67,13 @@ describe('StellarListenerService', () => {
     createAuditMock = jest.fn().mockResolvedValue({ id: 'audit-log-1' });
     executeCheckpointMock = jest.fn().mockResolvedValue(1);
     queryCheckpointMock = jest.fn().mockResolvedValue([]);
+    findManyEscrowMock = jest.fn().mockResolvedValue([]);
+    getEscrowByContractIdMock = jest.fn().mockResolvedValue([]);
 
     const prismaMock = {
       escrowOnChain: {
         findFirst: findFirstEscrowMock,
-        findMany: jest.fn().mockResolvedValue([]),
+        findMany: findManyEscrowMock,
         update: updateEscrowMock,
       },
       order: {
@@ -142,6 +148,10 @@ describe('StellarListenerService', () => {
         { provide: AuditLogService, useValue: auditLogMock },
         { provide: EscrowService, useValue: escrowServiceMock },
         { provide: OrderService, useValue: orderServiceMock },
+        {
+          provide: TrustlessWorkService,
+          useValue: { getEscrowByContractId: getEscrowByContractIdMock },
+        },
       ],
     }).compile();
 
@@ -192,6 +202,65 @@ describe('StellarListenerService', () => {
 
     expect(event).not.toBeNull();
     expect(event && (await service.processEvent(event))).toBe(true);
+  });
+
+  it('detects a checkpoint regression and replays from a recent ledger window', async () => {
+    (service as unknown as { lastProcessedLedger: number }).lastProcessedLedger =
+      1000;
+    const rpc = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: { result: { events: [], latestLedger: 950 } },
+    });
+
+    await service.fetchAndProcessNewEvents();
+
+    expect(rpc).toHaveBeenCalledTimes(2);
+    expect(rpc.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        params: expect.objectContaining({ startLedger: 1000 }),
+      }),
+    );
+    expect(rpc.mock.calls[1][1]).toEqual(
+      expect.objectContaining({
+        params: expect.objectContaining({ startLedger: 886 }),
+      }),
+    );
+    expect(getEscrowByContractIdMock).not.toHaveBeenCalled();
+    rpc.mockRestore();
+  });
+
+  it('reconciles a terminal escrow from a validated chain snapshot during rollback', async () => {
+    findManyEscrowMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          ...mockEscrow,
+          escrowStatus: 'released',
+        },
+      ]);
+    getEscrowByContractIdMock.mockResolvedValueOnce([
+      { contractId: 'CONTRACT_ABC', isActive: true, balance: 12, flags: {} },
+    ]);
+    (service as unknown as { lastProcessedLedger: number }).lastProcessedLedger =
+      1000;
+    const rpc = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: { result: { events: [], latestLedger: 950 } },
+    });
+
+    await service.fetchAndProcessNewEvents();
+
+    expect(getEscrowByContractIdMock).toHaveBeenCalledWith(
+      'CONTRACT_ABC',
+      true,
+    );
+    expect(updateEscrowMock).toHaveBeenCalledWith({
+      where: { escrowId: 'escrow-123' },
+      data: { escrowStatus: 'funded', txHashRelease: null },
+    });
+    expect(updateOrderMock).toHaveBeenCalledWith({
+      where: { orderId: 'order-123' },
+      data: { orderStatus: 'locked' },
+    });
+    rpc.mockRestore();
   });
 
   it('should process ESCROW_FUNDED event and update database & audit logs', async () => {

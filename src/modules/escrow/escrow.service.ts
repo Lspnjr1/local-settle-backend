@@ -224,6 +224,7 @@ export class EscrowService {
       deployResult.unsignedTransaction,
       deployerSecret,
       this.getNetworkPassphrase(),
+      'deploy',
     );
 
     if (broadcastResult.status !== 'SUCCESS' || !broadcastResult.contractId) {
@@ -626,6 +627,8 @@ export class EscrowService {
         approveXdr.unsignedTransaction,
         treasurySecret,
         this.getNetworkPassphrase(),
+        'approve',
+        escrow.contractId,
       );
 
       if (broadcastResult.status !== 'SUCCESS') {

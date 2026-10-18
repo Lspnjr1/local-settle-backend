@@ -105,6 +105,10 @@ The API listens on port `3001` by default. The frontend should point `NEXT_PUBLI
 
 Routes have endpoint-specific validation and guards. Check the controller and DTO before relying on an endpoint's authentication or ownership behavior.
 
+`GET /orders/user-stats/:userId` requires a valid JWT. These private account metrics are available to the account owner and administrators only; the response is limited to total and completed order counts and contains no individual order or counterparty details.
+
+Offer updates require the current `expectedVersion` from the offer response. Successful updates increment the persisted version; stale versions return HTTP 409 with `OFFER_VERSION_CONFLICT`. Existing rows start at version `0` through the `add_offer_version` migration.
+
 Escrow evidence uploads accept only matching PDF, JPEG, PNG, or WebP extensions and MIME types. Storage keys use generated UUID filenames and are persisted in `evidence_key`; apply the `add_escrow_evidence_key` migration before deploying this change.
 
 Order creation records `ORDER_CREATED` in the same database transaction as the order, escrow record, and offer execution update. Audit storage errors therefore abort the complete database transaction instead of leaving a committed order without its audit record.
