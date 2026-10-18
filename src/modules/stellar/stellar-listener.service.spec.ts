@@ -196,6 +196,29 @@ describe('StellarListenerService', () => {
     expect(createAuditMock).not.toHaveBeenCalled();
   });
 
+  it('does not move the checkpoint past an event whose transaction fails', async () => {
+    const fundFixture = escrowEventFixtures.find((item) => item.name === 'fund');
+    if (!fundFixture) throw new Error('fund fixture is missing');
+    updateEscrowMock.mockRejectedValue(new Error('temporary database failure'));
+    jest
+      .spyOn(
+        service as unknown as {
+          queryEventsFromRpc: (
+            contracts: string[],
+          ) => Promise<{
+            events: (typeof fundFixture.raw)[];
+            latestLedger: number;
+          }>;
+        },
+        'queryEventsFromRpc',
+      )
+      .mockResolvedValue({ events: [fundFixture.raw], latestLedger: 1300 });
+
+    await service.fetchAndProcessNewEvents();
+
+    expect(executeCheckpointMock).not.toHaveBeenCalled();
+  });
+
   it('processes an event parsed from the shared Soroban fixture', async () => {
     const fixture = escrowEventFixtures.find((item) => item.name === 'fund');
     const event = fixture && parser.parseEvent(fixture.raw);
