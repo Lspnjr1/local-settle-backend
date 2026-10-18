@@ -35,6 +35,8 @@ describe('StellarListenerService', () => {
   let updateEscrowMock: jest.Mock;
   let updateOrderMock: jest.Mock;
   let createAuditMock: jest.Mock;
+  let executeCheckpointMock: jest.Mock;
+  let queryCheckpointMock: jest.Mock;
   let parser: StellarEventParserService;
 
   const mockEscrow: MockEscrowRecord = {
@@ -59,6 +61,8 @@ describe('StellarListenerService', () => {
       .fn()
       .mockResolvedValue({ orderId: 'order-123', orderStatus: 'locked' });
     createAuditMock = jest.fn().mockResolvedValue({ id: 'audit-log-1' });
+    executeCheckpointMock = jest.fn().mockResolvedValue(1);
+    queryCheckpointMock = jest.fn().mockResolvedValue([]);
 
     const prismaMock = {
       escrowOnChain: {
@@ -73,6 +77,8 @@ describe('StellarListenerService', () => {
         findFirst: jest.fn().mockResolvedValue(null),
         create: createAuditMock,
       },
+      $executeRaw: executeCheckpointMock,
+      $queryRaw: queryCheckpointMock,
       $transaction: jest
         .fn()
         .mockImplementation((cb: (tx: unknown) => Promise<unknown>) =>
@@ -149,6 +155,35 @@ describe('StellarListenerService', () => {
 
   it('should be defined', () => {
     expect(service).toBeDefined();
+  });
+
+  it('persists an empty-poll ledger checkpoint independently of audit logs', async () => {
+    jest
+      .spyOn(
+        service as unknown as {
+          queryEventsFromRpc: (
+            contracts: string[],
+          ) => Promise<{ events: never[]; latestLedger: number }>;
+        },
+        'queryEventsFromRpc',
+      )
+      .mockResolvedValue({ events: [], latestLedger: 1200 });
+
+    await service.fetchAndProcessNewEvents();
+
+    expect(executeCheckpointMock).toHaveBeenCalledTimes(1);
+    expect(createAuditMock).not.toHaveBeenCalled();
+  });
+
+  it('restores the listener cursor from its checkpoint row', async () => {
+    queryCheckpointMock.mockResolvedValue([{ ledger_sequence: 1234n }]);
+
+    await (
+      service as unknown as { loadLastProcessedLedger: () => Promise<void> }
+    ).loadLastProcessedLedger();
+
+    expect(service['lastProcessedLedger']).toBe(1234);
+    expect(createAuditMock).not.toHaveBeenCalled();
   });
 
   it('processes an event parsed from the shared Soroban fixture', async () => {

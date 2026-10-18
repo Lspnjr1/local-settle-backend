@@ -161,6 +161,7 @@ export class StellarListenerService implements OnModuleInit, OnModuleDestroy {
       );
     }
     let processedCount = 0;
+    let failedEvent = false;
 
     for (const raw of rawEvents) {
       try {
@@ -175,6 +176,10 @@ export class StellarListenerService implements OnModuleInit, OnModuleDestroy {
           parsed.ledgerSequence &&
           parsed.ledgerSequence > this.lastProcessedLedger
         ) {
+          // Handled events checkpoint inside the same transaction as their
+          // escrow/order/audit updates. Skipped but valid events can advance
+          // the cursor here because they require no database mutation.
+          if (!handled) await this.persistCheckpoint(parsed.ledgerSequence);
           this.lastProcessedLedger = parsed.ledgerSequence;
         }
       } catch (err: unknown) {
@@ -184,10 +189,20 @@ export class StellarListenerService implements OnModuleInit, OnModuleDestroy {
           `Failed to process individual Stellar event ${raw.id}: ${message}`,
           stack,
         );
+        // Do not move the durable cursor beyond a failed event. The next poll
+        // must fetch it again before it can safely process later ledgers.
+        failedEvent = true;
+        break;
       }
     }
 
-    if (latestLedger && latestLedger > this.lastProcessedLedger) {
+    if (
+      latestLedger &&
+      latestLedger > this.lastProcessedLedger &&
+      rawEvents.length === 0 &&
+      !failedEvent
+    ) {
+      await this.persistCheckpoint(latestLedger);
       this.lastProcessedLedger = latestLedger;
     }
 
@@ -365,6 +380,16 @@ export class StellarListenerService implements OnModuleInit, OnModuleDestroy {
           },
         },
       });
+
+      if (event.ledgerSequence) {
+        await tx.$executeRaw`
+          INSERT INTO stellar_listener_checkpoint (id, ledger_sequence, updated_at)
+          VALUES (1, ${BigInt(event.ledgerSequence)}, NOW())
+          ON CONFLICT (id) DO UPDATE
+          SET ledger_sequence = EXCLUDED.ledger_sequence, updated_at = NOW()
+          WHERE stellar_listener_checkpoint.ledger_sequence < EXCLUDED.ledger_sequence
+        `;
+      }
     });
 
     this.notifyUsers(
@@ -483,6 +508,20 @@ export class StellarListenerService implements OnModuleInit, OnModuleDestroy {
 
   private async loadLastProcessedLedger() {
     try {
+      const checkpoints = await this.prisma.$queryRaw<
+        Array<{ ledger_sequence: bigint | number | string }>
+      >`SELECT ledger_sequence FROM stellar_listener_checkpoint WHERE id = 1`;
+      const checkpointLedger = checkpoints[0]?.ledger_sequence;
+      if (checkpointLedger !== undefined) {
+        this.lastProcessedLedger = Number(checkpointLedger);
+        this.logger.log(
+          `Resuming event sync from saved ledger sequence: ${this.lastProcessedLedger}`,
+        );
+        return;
+      }
+
+      // One-time compatibility fallback for databases upgraded before the
+      // independent checkpoint table existed.
       const latestAudit = await this.prisma.auditLog.findFirst({
         where: {
           action: {
@@ -515,5 +554,15 @@ export class StellarListenerService implements OnModuleInit, OnModuleDestroy {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Could not load last processed ledger: ${message}`);
     }
+  }
+
+  private async persistCheckpoint(ledgerSequence: number): Promise<void> {
+    await this.prisma.$executeRaw`
+      INSERT INTO stellar_listener_checkpoint (id, ledger_sequence, updated_at)
+      VALUES (1, ${BigInt(ledgerSequence)}, NOW())
+      ON CONFLICT (id) DO UPDATE
+      SET ledger_sequence = EXCLUDED.ledger_sequence, updated_at = NOW()
+      WHERE stellar_listener_checkpoint.ledger_sequence < EXCLUDED.ledger_sequence
+    `;
   }
 }
